@@ -18,7 +18,7 @@ const DELAI_ENTRE_CLASSES_MS = 300;
  * Attend la prochaine réponse `/hp/appelfonction/...` dont le champ `id` du
  * JSON correspond à `nomFonction` (ex: "FonctionEmploiDuTemps").
  */
-function attendreReponseFonction(page, nomFonction, { timeout = 15000 } = {}) {
+function attendreReponseFonction(page, nomFonction, { timeout = 30000 } = {}) {
   return page.waitForResponse(
     async (response) => {
       if (!response.url().includes('/hp/appelfonction/')) return false;
@@ -37,10 +37,13 @@ function attendreReponseFonction(page, nomFonction, { timeout = 15000 } = {}) {
  * Ferme la pop-up d'information (cookies) qui bloque l'interaction au premier
  * chargement de la page, si elle est présente.
  */
-async function fermerPopupInfo(page) {
+async function fermerPopupInfo(page, { timeout = 5000 } = {}) {
   const bouton = page.getByRole('button', { name: /Fermer/i }).first();
-  if (await bouton.count().then((n) => n > 0).catch(() => false)) {
-    await bouton.click().catch(() => {});
+  try {
+    await bouton.waitFor({ state: 'visible', timeout });
+    await bouton.click();
+  } catch {
+    // Pas de pop-up apparue dans le délai — rien à fermer, on continue.
   }
 }
 
