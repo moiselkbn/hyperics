@@ -132,6 +132,21 @@ Le cas redoublant reste géré nativement : `selections` est un tableau, donc un
 
 **Limite connue du standard webcal (pas propre à l'implémentation)** : le rafraîchissement est décidé par le client (Apple Calendar : quelques heures ; Google Calendar : souvent 8-24h), pas par le serveur. Même avec un scraping horaire, un élève peut ne voir la mise à jour que plus tard selon son app. À mentionner dans l'interface/FAQ pour gérer les attentes.
 
+## 6bis. Bug corrigé : les heures dépendaient du fuseau horaire du serveur (14/09/2026)
+
+En testant `courseStartDateTime` + la génération `.ics` en local (machine réglée en heure de
+Belgique), tout semblait correct. Mais la lib `ics` interprète par défaut un tableau `[y,m,j,h,min]`
+comme de l'**heure locale du serveur qui exécute le code** — or Vercel/GitHub Actions tournent
+généralement en UTC, pas en heure belge. Sans correction, les horaires du `.ics` auraient été décalés
+d'1 à 2h (selon CET/CEST) pour tout élève dont le calendrier tourne sur ces plateformes.
+
+**Fix** : `decode.js` calcule maintenant lui-même le décalage Bruxelles↔UTC (règle UE : changement
+d'heure le dernier dimanche de mars/octobre à 01h00 UTC), sans jamais passer par l'interprétation
+"heure locale" native de `Date` — le résultat est donc un instant UTC réel, correct quel que soit le
+fuseau horaire de la machine qui exécute le code. `ics.js` lit ensuite les composantes UTC (`getUTC*`)
+et passe `startInputType: 'utc'` à la lib. **Vérifié** en forçant `TZ=UTC`, `TZ=America/New_York`,
+`TZ=Asia/Tokyo` : résultat identique dans tous les cas, y compris le passage été/hiver.
+
 ## 7. Point de vigilance (rappel de la préprod)
 
 Le scraping PRONOTE `/hp/invite` n'est pas une API officielle/documentée — rétro-ingénierie d'un endpoint public sans authentification. Le volume estimé (§ 3) reste dans une fourchette raisonnable comparée à un usage manuel équivalent, et l'optimisation § 4 le réduit encore. Rester attentif si le volume réel dépasse largement les estimations une fois en production.

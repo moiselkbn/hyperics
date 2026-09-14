@@ -59,29 +59,65 @@ export function parseDom(dom) {
 export const SEMAINE_1_LUNDI_ISO = '2026-09-14';
 
 /**
- * Calcule la date du lundi d'une semaine PRONOTE donnée.
+ * Calcule la date du lundi d'une semaine PRONOTE donnée, en arithmétique UTC
+ * pure (jours entiers uniquement — sans heure, donc sans ambiguïté de fuseau).
+ *
  * @param {number} weekNumber - numéro de semaine PRONOTE (1 à 54)
  * @param {string} [referenceMondayISO] - date ISO du lundi de la semaine 1
- * @returns {Date}
+ * @returns {Date} minuit UTC du lundi correspondant (sert de repère calendaire,
+ *   pas un instant réel — voir courseStartDateTime pour l'heure précise)
  */
 export function mondayOfWeek(weekNumber, referenceMondayISO = SEMAINE_1_LUNDI_ISO) {
-  const reference = new Date(`${referenceMondayISO}T00:00:00`);
-  const monday = new Date(reference);
-  monday.setDate(reference.getDate() + (weekNumber - 1) * 7);
-  return monday;
+  const [annee, mois, jour] = referenceMondayISO.split('-').map(Number);
+  const referenceMs = Date.UTC(annee, mois - 1, jour);
+  const lundiMs = referenceMs + (weekNumber - 1) * 7 * 24 * 60 * 60 * 1000;
+  return new Date(lundiMs);
+}
+
+// PRONOTE (HEFF) est en Belgique : l'heure affichée est toujours l'heure de
+// Bruxelles (CET l'hiver = UTC+1, CEST l'été = UTC+2), quel que soit le
+// fuseau horaire du serveur qui exécute ce code (Vercel/GitHub Actions
+// tournent en UTC). On calcule donc le décalage nous-mêmes plutôt que de
+// laisser l'objet Date natif interpréter les heures dans le fuseau local du
+// serveur — sinon le résultat serait faux dès que ce code tourne ailleurs
+// que sur une machine réglée en heure belge (voir docs/architecture.md §6bis).
+
+/** Dernier dimanche du mois donné, à 01h00 UTC (instant du changement d'heure UE). */
+function dernierDimancheUTC(annee, moisIndex0) {
+  // Le jour 0 du mois suivant = le dernier jour du mois courant.
+  const dernierJour = new Date(Date.UTC(annee, moisIndex0 + 1, 0, 1, 0, 0));
+  dernierJour.setUTCDate(dernierJour.getUTCDate() - dernierJour.getUTCDay());
+  return dernierJour;
 }
 
 /**
- * Calcule la date/heure de début réelle d'une occurrence de cours.
+ * Décalage (en minutes) entre l'heure de Bruxelles et UTC pour une date UTC
+ * donnée : +120 (CEST, été) ou +60 (CET, hiver). Règle UE : le changement a
+ * lieu à 01h00 UTC le dernier dimanche de mars (hiver→été) et d'octobre
+ * (été→hiver).
+ */
+function decalageBruxellesMinutes(dateUTC) {
+  const annee = dateUTC.getUTCFullYear();
+  const debutEte = dernierDimancheUTC(annee, 2); // mars
+  const finEte = dernierDimancheUTC(annee, 9); // octobre
+  const estEte = dateUTC >= debutEte && dateUTC < finEte;
+  return estEte ? 120 : 60;
+}
+
+/**
+ * Calcule l'instant UTC réel de début d'une occurrence de cours, à partir de
+ * l'heure locale de Bruxelles décodée (§8). Indépendant du fuseau horaire du
+ * serveur qui exécute ce code.
  *
  * @param {number} weekNumber - numéro de semaine PRONOTE (issu de `dom`)
  * @param {number} dayIndex - 0 = lundi ... 4 = vendredi (issu de decodeCoursePosition)
- * @param {number} startMinutes - minutes depuis minuit (issu de decodeCoursePosition)
- * @returns {Date}
+ * @param {number} startMinutes - minutes depuis minuit, heure de Bruxelles (issu de decodeCoursePosition)
+ * @returns {Date} l'instant UTC réel (ex: 09h00 heure de Bruxelles en septembre → 07h00 UTC)
  */
 export function courseStartDateTime(weekNumber, dayIndex, startMinutes) {
-  const date = mondayOfWeek(weekNumber);
-  date.setDate(date.getDate() + dayIndex);
-  date.setMinutes(date.getMinutes() + startMinutes);
-  return date;
+  const lundiMs = mondayOfWeek(weekNumber).getTime();
+  const jourMs = lundiMs + dayIndex * 24 * 60 * 60 * 1000;
+  const decalage = decalageBruxellesMinutes(new Date(jourMs));
+  const instantMs = jourMs + startMinutes * 60 * 1000 - decalage * 60 * 1000;
+  return new Date(instantMs);
 }

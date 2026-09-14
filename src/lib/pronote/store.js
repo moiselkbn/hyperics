@@ -2,7 +2,12 @@
  * Écriture/lecture des données PRONOTE en cache dans Redis (Vercel Storage).
  * Voir docs/architecture.md §5 pour la structure des clés.
  */
+import { randomBytes } from 'node:crypto';
 import { createClient } from 'redis';
+
+// Durée de vie d'un lien élève sans activité (§5/§6 de l'archi) : 90 jours,
+// reset à chaque fois que le calendrier est consulté (voir touchSelection).
+const TOKEN_TTL_SECONDS = 90 * 24 * 60 * 60;
 
 let client;
 
@@ -56,4 +61,44 @@ export async function getCoursesForClass(classId) {
   const redis = await getClient();
   const raw = await redis.get(`courses:${classId}`);
   return raw ? JSON.parse(raw) : null;
+}
+
+/**
+ * Crée un nouveau lien élève (token opaque) et enregistre sa sélection.
+ *
+ * @param {{ classId: string, includedCourseUids: string[] }[]} selections
+ *   un élément par classe/année choisie — plusieurs éléments pour un redoublant
+ *   (voir docs/architecture.md §5).
+ * @returns {Promise<string>} le token généré, à mettre dans le lien webcal
+ */
+export async function createSelection(selections) {
+  const redis = await getClient();
+  const token = randomBytes(24).toString('base64url'); // opaque, non-devinable
+
+  const data = {
+    selections,
+    createdAt: new Date().toISOString(),
+    lastAccessAt: new Date().toISOString(),
+  };
+
+  await redis.set(`token:${token}`, JSON.stringify(data), { EX: TOKEN_TTL_SECONDS });
+  return token;
+}
+
+/**
+ * Lit la sélection derrière un token, et prolonge sa durée de vie (§6 de
+ * l'archi : le TTL est reset à chaque consultation du calendrier).
+ *
+ * @returns {Promise<{selections: object[], createdAt: string, lastAccessAt: string} | null>}
+ */
+export async function getSelectionAndTouch(token) {
+  const redis = await getClient();
+  const raw = await redis.get(`token:${token}`);
+  if (!raw) return null;
+
+  const data = JSON.parse(raw);
+  data.lastAccessAt = new Date().toISOString();
+  await redis.set(`token:${token}`, JSON.stringify(data), { EX: TOKEN_TTL_SECONDS });
+
+  return data;
 }
