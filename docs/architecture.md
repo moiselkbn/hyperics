@@ -13,14 +13,16 @@
                                                                   │ API routes
                                                                   ▼
                                                        ┌──────────────────────┐
-                                                       │     Vercel KV        │
-                                                       │  classes:list        │
-                                                       │  courses:{classId}   │
-                                                       │  cancellations:{id}  │
-                                                       │  token:{token}       │
+                                                       │  Redis (Vercel        │
+                                                       │  Storage, provider    │
+                                                       │  Redis officiel)      │
+                                                       │  classes:list         │
+                                                       │  courses:{classId}    │
+                                                       │  cancellations:{id}   │
+                                                       │  token:{token}        │
                                                        └──────────┬───────────┘
                                                                   ▲
-                                          écriture directe via API REST de Vercel KV
+                                       connexion Redis directe (REDIS_URL, npm `redis`)
                                                                   │
 ┌─────────────┐   navigation réelle (Playwright)   ┌──────────────────────────┐
 │   PRONOTE   │◀─────────────────────────────────── │  GitHub Actions          │
@@ -30,20 +32,24 @@
 
 ┌──────────────────┐   GET webcal://.../calendar/{token}
 │ Apple/Google Cal  │ ────────────────────────────────────▶ /api/calendar/[token]
-└──────────────────┘   ◀─── .ics généré à la volée (lecture KV + filtre + ics)
+└──────────────────┘   ◀─── .ics généré à la volée (lecture Redis + filtre + ics)
 ```
 
-**Changement clé par rapport à la première version** : le scraper ne tourne plus dans une route API
-Vercel — il tourne **directement dans le job GitHub Actions**, qui pilote un vrai navigateur headless
-(Playwright) et écrit le résultat dans Vercel KV via son API REST. Raison détaillée en §8bis.
+**Changements clés par rapport à la première version** :
+- Le scraper ne tourne plus dans une route API Vercel — il tourne **directement dans le job GitHub
+  Actions**, qui pilote un vrai navigateur headless (Playwright). Raison détaillée en §8bis.
+- "Vercel KV" (le produit d'origine) est déprécié — remplacé par une intégration Marketplace
+  **Redis** (provider Redis officiel), avec le même modèle clé-valeur. Le scraper et l'app Next.js
+  s'y connectent directement via `REDIS_URL` (client npm `redis`, protocole Redis standard), pas via
+  une API REST comme envisagé initialement.
 
 ## 2. Stack retenue
 
 | Brique | Choix | Rôle |
 |---|---|---|
 | **Front + API** | **Next.js** (App Router) sur **Vercel** | Un seul projet pour l'interface (formulaire) et le backend (routes API) |
-| **Stockage** | **Vercel KV** (Redis managé, free tier) | Modèle clé-valeur : `token → sélection`, `classId → cours`, pas besoin de relationnel |
-| **Scraping** | **Node + Playwright**, exécuté **dans le job GitHub Actions** (pas sur Vercel) | Le protocole PRONOTE est chiffré côté client (AES) — il faut un vrai navigateur pour le piloter. Écrit ensuite dans Vercel KV via son API REST |
+| **Stockage** | **Redis** (Vercel Storage → Marketplace, provider Redis, free tier) | Modèle clé-valeur : `token → sélection`, `classId → cours`, pas besoin de relationnel. Connexion via `REDIS_URL` + client npm `redis` |
+| **Scraping** | **Node + Playwright**, exécuté **dans le job GitHub Actions** (pas sur Vercel) | Le protocole PRONOTE est chiffré côté client (AES) — il faut un vrai navigateur pour le piloter. Écrit ensuite dans Redis directement (même `REDIS_URL`, exposé en secret GitHub Actions) |
 | **Déclenchement du scraping** | **GitHub Actions (cron)**, 1x/h 6h-18h | Vercel Cron gratuit = 1x/jour max ; GitHub Actions permet une fréquence horaire gratuitement, et n'a pas la limite de 10s des fonctions Vercel (nécessaire pour Playwright) |
 | **Génération `.ics`** | Lib `ics` (npm) dans `/api/calendar/[token]` | Génération à la volée à chaque appel du client calendrier, jamais de fichier stocké |
 | **Rétention** | TTL Redis sur `token:{token}` (~90j), reset à chaque accès | Auto-nettoyage, pas de job de purge à écrire |
@@ -91,13 +97,19 @@ classes). Si jamais le volume devenait un problème réel en production, réintr
 classes actives reste possible sans tout redesigner (juste rajouter un index et une condition dans la
 boucle du scraper).
 
-## 5. Structure des clés KV
+## 5. Structure des clés Redis
+
+Format réellement implémenté (voir [`src/lib/pronote/store.js`](../src/lib/pronote/store.js) et
+[`decode.js`](../src/lib/pronote/decode.js)) :
 
 ```
-classes:list                → [{ id, label, schoolYear }, ...]           # cache hebdo, toutes classes
-courses:{classId}           → [{ uid, subject, teacher, room,
-                                  day, start, end, weekPattern[] }, ...]  # cache horaire, toutes les classes
-cancellations:{classId}     → [{ courseUid, week, date }, ...]           # idem
+classes:list                → [{ id, label }, ...]                       # cache, toutes classes
+                                                                           # id = "N" PRONOTE (stable),
+                                                                           # ex: "50#tmc4QgD_..."
+courses:{classId}           → [{ uid, dayIndex, startMinutes,
+                                  durationMinutes, weeks: number[],
+                                  subject, teacher, room, comment }, ...] # cache horaire, toutes les classes
+cancellations:{classId}     → [{ courseUid, week, date }, ...]           # pas encore implémenté
 
 token:{token}                → {
                                   selections: [
@@ -105,6 +117,7 @@ token:{token}                → {
                                   ],
                                   createdAt, lastAccessAt
                                 }                                        # TTL ~90j, reset à chaque GET
+                                                                           # (pas encore implémenté)
 ```
 
 Le cas redoublant reste géré nativement : `selections` est un tableau, donc un redoublant a deux entrées (année N-1 partielle + année N complète) sous le même token.
@@ -112,7 +125,7 @@ Le cas redoublant reste géré nativement : `selections` est un tableau, donc un
 ## 6. Flux clé : génération du `.ics`
 
 1. `GET /api/calendar/{token}` (appelé périodiquement par le client calendrier — Apple/Google Calendar, en pull, pas en push).
-2. Lire `token:{token}` dans KV → absent (expiré/inconnu) → 404.
+2. Lire `token:{token}` dans Redis → absent (expiré/inconnu) → 404.
 3. Reset du TTL (`EXPIRE token:{token} 90j`) → marque l'usage comme actif.
 4. Pour chaque entrée de `selections` : lire `courses:{classId}` + `cancellations:{classId}`, filtrer par `includedCourseUids`.
 5. Générer le VCALENDAR (lib `ics`) → retourner avec `Content-Type: text/calendar`.
@@ -178,9 +191,14 @@ limite de 10s des fonctions Vercel gratuites).
 ## 9. Reste à faire avant de coder le générateur `.ics`
 
 1. ✅ **Scraper Node + Playwright** — [`src/lib/pronote/scraper.js`](../src/lib/pronote/scraper.js) :
-   ouvre `/hp/invite`, ferme la pop-up d'info, liste les classes (widget custom, pas un `<select>`
-   natif), sélectionne chaque classe et capture la réponse `FonctionEmploiDuTemps`, applique le
-   décodage (§8). Testé en local (`node scripts/test-scrape.mjs [n]`) — ~33s pour les 60 classes.
-2. Brancher l'écriture dans Vercel KV via l'API REST (une fois le compte Vercel créé).
-3. Écrire le workflow GitHub Actions (cron `0 4-16 * * *`, secrets pour le token Vercel KV).
+   ouvre `/hp/invite`, ferme la pop-up d'info, liste les classes (`FonctionRenvoyerListeDeRessource`,
+   donne directement label + ID stable), sélectionne chaque classe et capture la réponse
+   `FonctionEmploiDuTemps`, applique le décodage (§8). Testé en local
+   (`node scripts/test-scrape.mjs [n]`) — ~33s pour les 60 classes.
+2. ✅ **Stockage Redis branché** — compte Vercel créé, intégration Marketplace **Redis** provisionnée
+   et connectée au projet (`REDIS_URL`). [`src/lib/pronote/store.js`](../src/lib/pronote/store.js) :
+   `saveScrapeResult`/`getClassesList`/`getCoursesForClass`.
+   [`scripts/scrape-and-store.mjs`](../scripts/scrape-and-store.mjs) : script de production (scrape +
+   écriture Redis), testé en local de bout en bout.
+3. Écrire le workflow GitHub Actions (cron `0 4-16 * * *`, `REDIS_URL` en secret GitHub Actions).
 4. Construire le formulaire élève (Next.js) et le générateur `.ics` (`/api/calendar/[token]`).
