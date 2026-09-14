@@ -70,13 +70,32 @@ function normaliserCours(coursBrut) {
 }
 
 /**
+ * Récupère la liste des classes ("promotions") avec leur ID stable PRONOTE,
+ * via la réponse `FonctionRenvoyerListeDeRessource` déclenchée à l'ouverture
+ * du sélecteur de classe.
+ *
+ * @returns {Promise<{ id: string, label: string }[]>}
+ */
+async function listerClasses(page) {
+  const reponseAttendue = attendreReponseFonction(page, 'FonctionRenvoyerListeDeRessource');
+  const combobox = page.getByRole('combobox', { name: /promotion/i });
+  await combobox.click();
+  const response = await reponseAttendue;
+  const json = await response.json();
+  await page.keyboard.press('Escape'); // referme la liste ouverte pour la déclencher
+
+  const liste = json?.dataSec?.data?.ListeRessources?.Liste ?? [];
+  return liste.map((r) => ({ id: r.N, label: r.L }));
+}
+
+/**
  * Scrape l'emploi du temps annuel de toutes les classes PRONOTE.
  *
  * @param {object} [options]
  * @param {number} [options.delayMs] - délai entre deux classes (anti-burst)
  * @param {number} [options.limit] - ne scraper que les N premières classes (pratique pour tester)
  * @param {(label: string, index: number, total: number) => void} [options.onProgress]
- * @returns {Promise<{ classes: string[], coursesByClass: Record<string, object[]> }>}
+ * @returns {Promise<{ classes: {id: string, label: string}[], coursesByClassId: Record<string, object[]> }>}
  */
 export async function scrapeAllClasses({ delayMs = DELAI_ENTRE_CLASSES_MS, limit, onProgress } = {}) {
   const browser = await chromium.launch();
@@ -87,25 +106,14 @@ export async function scrapeAllClasses({ delayMs = DELAI_ENTRE_CLASSES_MS, limit
   await page.goto(INVITE_URL, { waitUntil: 'load' });
   await fermerPopupInfo(page);
 
-  const combobox = page.getByRole('combobox', { name: /promotion/i });
-  const options = page.getByRole('option');
-
-  // Ouvre la liste une première fois pour lire tous les noms de classe.
-  await combobox.click();
-  await options.first().waitFor({ timeout: 15000 });
-  const total = await options.count();
-  let classes = [];
-  for (let i = 0; i < total; i++) {
-    classes.push((await options.nth(i).textContent())?.trim());
-  }
-  await page.keyboard.press('Escape'); // referme la liste
-
+  let classes = await listerClasses(page);
   if (limit) classes = classes.slice(0, limit);
 
-  const coursesByClass = {};
+  const combobox = page.getByRole('combobox', { name: /promotion/i });
+  const coursesByClassId = {};
 
   for (let i = 0; i < classes.length; i++) {
-    const label = classes[i];
+    const { id, label } = classes[i];
     onProgress?.(label, i, classes.length);
 
     const reponseAttendue = attendreReponseFonction(page, 'FonctionEmploiDuTemps');
@@ -115,7 +123,7 @@ export async function scrapeAllClasses({ delayMs = DELAI_ENTRE_CLASSES_MS, limit
     const json = await response.json();
 
     const listeCours = json?.dataSec?.data?.ListeCours ?? [];
-    coursesByClass[label] = listeCours.map(normaliserCours);
+    coursesByClassId[id] = listeCours.map(normaliserCours);
 
     if (i < classes.length - 1) {
       await page.waitForTimeout(delayMs);
@@ -124,5 +132,5 @@ export async function scrapeAllClasses({ delayMs = DELAI_ENTRE_CLASSES_MS, limit
 
   await browser.close();
 
-  return { classes, coursesByClass };
+  return { classes, coursesByClassId };
 }
