@@ -83,7 +83,14 @@ export default function Home() {
   // Range la classe en cours de configuration dans la liste finalisée, et
   // renvoie la liste à jour (utile car setState est asynchrone : on ne peut
   // pas relire `classesAjoutees` juste après l'avoir appelé).
+  //
+  // `classeEnCours` peut être null : c'est le cas quand on arrive ici depuis
+  // l'étape CLASSE via "Terminer, générer mon lien" (voir plus bas) — aucune
+  // classe n'est en cours de configuration, on part juste de ce qui est déjà
+  // dans `classesAjoutees`.
   function finaliserClasseEnCours() {
+    if (!classeEnCours) return classesAjoutees;
+
     const excludedCourseUids = coursDeLaClasse
       .map((c) => c.uid)
       .filter((uid) => !coursCoches.has(uid));
@@ -189,6 +196,16 @@ export default function Home() {
                   </li>
                 ))}
               </ul>
+            )}
+            {classesAjoutees.length > 0 && (
+              <button
+                type="button"
+                onClick={genererLien}
+                disabled={envoiEnCours}
+                className="rounded-full bg-zinc-900 px-5 py-3 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900"
+              >
+                {envoiEnCours ? 'Génération...' : 'Terminer, générer mon lien'}
+              </button>
             )}
           </section>
         )}
