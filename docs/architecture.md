@@ -130,7 +130,19 @@ Le cas redoublant reste géré nativement : `selections` est un tableau, donc un
 4. Pour chaque entrée de `selections` : lire `courses:{classId}` + `cancellations:{classId}`, filtrer par `includedCourseUids`.
 5. Générer le VCALENDAR (lib `ics`) → retourner avec `Content-Type: text/calendar`.
 
-**Limite connue du standard webcal (pas propre à l'implémentation)** : le rafraîchissement est décidé par le client (Apple Calendar : quelques heures ; Google Calendar : souvent 8-24h), pas par le serveur. Même avec un scraping horaire, un élève peut ne voir la mise à jour que plus tard selon son app. À mentionner dans l'interface/FAQ pour gérer les attentes.
+**Limite connue du standard webcal (pas propre à l'implémentation)** : un abonnement `.ics` fonctionne en **pull**, jamais en push — c'est le client calendrier qui vient chercher les nouveautés quand il le décide, le serveur ne peut pas le réveiller.
+
+La fréquence de scraping (§3) ne fixe donc pas la fraîcheur vue par l'élève, elle fixe son **plafond** : avec 1x/h, ce que le client récupère n'a jamais plus d'une heure. Ce que le client fait de cette disponibilité lui appartient :
+
+| Client | Fréquence de rafraîchissement | Réglable ? |
+|---|---|---|
+| Apple Calendar (macOS) | Choisie à l'abonnement : 5 min, 15 min, 1h, 1 jour, 1 semaine | ✅ par l'élève |
+| Apple Calendar (iOS) | Suit *Réglages → Calendrier → Comptes → Nouvelles données* | ✅ par l'élève |
+| Google Calendar | Décidée par Google, souvent 8-24h | ❌ ni par nous ni par l'élève |
+
+**Ce qu'on fait côté serveur** : le `.ics` annonce `X-PUBLISHED-TTL:PT1H` **et** `REFRESH-INTERVAL;VALUE=DURATION:PT1H` (RFC 7986) — la même suggestion « reviens dans 1h » en deux dialectes, parce que les clients ne reconnaissent pas tous la même propriété. Ça reste une suggestion : Apple/Outlook en tiennent plus ou moins compte, Google l'ignore.
+
+**Conséquence pratique** : un changement d'horaire est visible dans l'heure pour un élève iPhone bien réglé, le lendemain pour un élève sur Google Calendar. À expliquer dans l'interface/FAQ pour gérer les attentes.
 
 ## 6bis. Bug corrigé : les heures dépendaient du fuseau horaire du serveur (14/09/2026)
 

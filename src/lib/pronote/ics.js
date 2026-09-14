@@ -64,13 +64,38 @@ async function construireEvenements(selections) {
 }
 
 /**
+ * Ajoute `REFRESH-INTERVAL` (RFC 7986) au calendrier généré.
+ *
+ * La lib `ics` produit déjà `X-PUBLISHED-TTL:PT1H` (l'ancienne propriété, née
+ * chez Microsoft) mais pas son équivalent standardisé. Les deux disent la même
+ * chose — « reviens chercher les nouveautés dans 1h » — mais les clients
+ * calendrier ne reconnaissent pas tous la même, donc on met les deux.
+ *
+ * À garder en tête : ce n'est qu'une *suggestion*. Apple/Outlook en tiennent
+ * plus ou moins compte, Google Calendar l'ignore et rafraîchit quand il veut
+ * (souvent 8-24h). Voir docs/architecture.md §6.
+ */
+function ajouterRefreshInterval(ics) {
+  const propriete = 'REFRESH-INTERVAL;VALUE=DURATION:PT1H\r\n';
+  // On l'insère juste avant le premier événement (ou avant la fin du calendrier
+  // s'il n'y en a aucun) : à cet endroit, elle est toujours au bon niveau, quoi
+  // que la lib `ics` ait généré au-dessus.
+  const ancre = ics.includes('BEGIN:VEVENT') ? 'BEGIN:VEVENT' : 'END:VCALENDAR';
+  return ics.replace(ancre, propriete + ancre);
+}
+
+/**
  * Génère le contenu texte d'un fichier .ics pour une sélection d'élève.
  * @param {{ classId: string, includedCourseUids?: string[] }[]} selections
  * @returns {Promise<string>}
  */
 export async function generateIcsForSelections(selections) {
   const evenements = await construireEvenements(selections);
-  const { error, value } = createEvents(evenements);
+  const { error, value } = createEvents(evenements, {
+    productId: 'hyperics',
+    // Nom affiché du calendrier dans l'app de l'élève (sinon il verrait l'URL).
+    calName: 'HyperICS — mon horaire',
+  });
   if (error) throw error;
-  return value;
+  return ajouterRefreshInterval(value);
 }
