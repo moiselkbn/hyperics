@@ -17,21 +17,25 @@
                                                        │  classes:list        │
                                                        │  courses:{classId}   │
                                                        │  cancellations:{id}  │
-                                                       │  active_classes(set) │
                                                        │  token:{token}       │
                                                        └──────────┬───────────┘
                                                                   ▲
-                                       scrape ciblé (active_classes seulement)
+                                          écriture directe via API REST de Vercel KV
                                                                   │
-┌─────────────┐   1x/h, 6h-18h (GitHub Actions cron)   ┌──────────────────────┐
-│   PRONOTE   │◀─────────────────────────────────────── │  /api/cron/scrape    │
-│ Espace Invité│  POST appelfonction (séquentiel, delay) │  (route API Vercel)  │
-└─────────────┘                                          └──────────────────────┘
+┌─────────────┐   navigation réelle (Playwright)   ┌──────────────────────────┐
+│   PRONOTE   │◀─────────────────────────────────── │  GitHub Actions          │
+│ Espace Invité│  (le protocole est chiffré AES     │  1x/h, 6h-18h            │
+└─────────────┘   côté client — cf §8bis)           │  scraper Node+Playwright │
+                                                      └──────────────────────────┘
 
 ┌──────────────────┐   GET webcal://.../calendar/{token}
 │ Apple/Google Cal  │ ────────────────────────────────────▶ /api/calendar/[token]
 └──────────────────┘   ◀─── .ics généré à la volée (lecture KV + filtre + ics)
 ```
+
+**Changement clé par rapport à la première version** : le scraper ne tourne plus dans une route API
+Vercel — il tourne **directement dans le job GitHub Actions**, qui pilote un vrai navigateur headless
+(Playwright) et écrit le résultat dans Vercel KV via son API REST. Raison détaillée en §8bis.
 
 ## 2. Stack retenue
 
@@ -39,7 +43,8 @@
 |---|---|---|
 | **Front + API** | **Next.js** (App Router) sur **Vercel** | Un seul projet pour l'interface (formulaire) et le backend (routes API) |
 | **Stockage** | **Vercel KV** (Redis managé, free tier) | Modèle clé-valeur : `token → sélection`, `classId → cours`, pas besoin de relationnel |
-| **Déclenchement du scraping** | **GitHub Actions (cron)** → appelle `/api/cron/scrape` | Vercel Cron gratuit = 1x/jour max ; GitHub Actions permet une fréquence horaire gratuitement |
+| **Scraping** | **Node + Playwright**, exécuté **dans le job GitHub Actions** (pas sur Vercel) | Le protocole PRONOTE est chiffré côté client (AES) — il faut un vrai navigateur pour le piloter. Écrit ensuite dans Vercel KV via son API REST |
+| **Déclenchement du scraping** | **GitHub Actions (cron)**, 1x/h 6h-18h | Vercel Cron gratuit = 1x/jour max ; GitHub Actions permet une fréquence horaire gratuitement, et n'a pas la limite de 10s des fonctions Vercel (nécessaire pour Playwright) |
 | **Génération `.ics`** | Lib `ics` (npm) dans `/api/calendar/[token]` | Génération à la volée à chaque appel du client calendrier, jamais de fichier stocké |
 | **Rétention** | TTL Redis sur `token:{token}` (~90j), reset à chaque accès | Auto-nettoyage, pas de job de purge à écrire |
 
@@ -59,50 +64,38 @@ on:
 
 → **13 cycles/jour** (6h, 7h, ..., 18h), largement sous la contrainte "max 3x/jour".
 
-### Volume de requêtes estimé (avant optimisation par classes actives)
+### Volume de requêtes estimé
 
-Un cycle = 1 init de session + 1 appel par classe scrapée. Avec les ~60 classes : ~61 requêtes/cycle × 13 = ~800 requêtes/jour, ~65/h en un seul burst horaire. Comparable ou inférieur au trafic organique qu'aurait généré un usage manuel de PRONOTE par une centaine d'élèves — pas un pattern qui ressemble à de l'abus (voir § 6, point de vigilance).
-
-Avec l'optimisation "classes actives" (§ 4), ce volume baisse encore puisqu'on ne scrape que les classes réellement utilisées (probablement 5-15 au lancement, pas 60).
+Un cycle = 1 chargement de `/hp/invite` + 1 sélection par classe scrapée. Avec les ~60 classes : ~13 cycles/jour × 60 classes = ~780 "sélections classe" par jour, ~60/h en un seul burst horaire. Comparable ou inférieur au trafic organique qu'aurait généré un usage manuel de PRONOTE par une centaine d'élèves — pas un pattern qui ressemble à de l'abus (voir § 7, point de vigilance).
 
 ### Bonnes pratiques appliquées
 
-1. **Appels séquentiels avec délai** (~200-500ms entre chaque classe) plutôt qu'en parallèle → évite un pic brutal de requêtes simultanées.
-2. **`classes:list` cachée séparément et rafraîchie en hebdo seulement** (mapping nom↔ID stable) → pas besoin de la re-télécharger à chaque cycle horaire.
+1. **Sélections séquentielles avec délai** (~200-500ms entre chaque classe) plutôt qu'en parallèle → évite un pic brutal de requêtes simultanées.
+2. **`classes:list` cachée séparément et rafraîchie en hebdo seulement** (mapping nom↔ID stable) → pas besoin de la re-scraper à chaque cycle horaire, juste vérifiée/mise à jour une fois par semaine.
 
-## 4. Optimisation : ne scraper que les classes actives
+## 4. Simplification : on scrape toutes les classes à chaque cycle
 
-### Problème
+Une première version de cette archi prévoyait de ne scraper que les classes "actives" (utilisées par
+au moins un token), pour économiser du temps d'exécution sur les fonctions Vercel (limitées à 10s).
 
-Scraper les ~60 classes à chaque cycle alors que seule une fraction (5-15 au lancement) est réellement utilisée par des tokens existants est un gaspillage — de charge sur PRONOTE, et de complexité inutile.
+**Ce n'est plus nécessaire** : le scraper tourne maintenant dans un job GitHub Actions (§8bis), qui n'a
+pas cette limite de 10s — scraper les ~60 classes prend quelques minutes, largement dans le budget
+d'un cycle horaire. Complexité évitée : plus besoin d'un index `active_classes`, ni de "scrape à la
+demande" quand un élève choisit une classe jamais vue (source de latence UX et de code en plus).
 
-### Solution : deux niveaux de cache + un index des classes actives
-
-| Donnée | Fréquence | Portée |
-|---|---|---|
-| `classes:list` | Hebdo | **Toutes** les classes — nécessaire pour peupler le sélecteur du formulaire, même avant toute inscription |
-| `courses:{classId}` | Horaire (6h-18h) | **Seulement** les classes présentes dans `active_classes` |
-| `active_classes` (SET Redis) | Mis à jour à chaque nouvelle sélection | Liste des `classId` référencés par au moins un token existant |
-
-### Flux
-
-1. Élève choisit sa classe dans le formulaire (liste tirée de `classes:list`, toujours à jour en cache).
-2. Si `courses:{classId}` est absent du cache (aucun élève n'a encore choisi cette classe) → **scrape à la demande** de cette seule classe, en synchrone, le temps que l'élève arrive à l'étape de sélection des cours. Cette classe est ajoutée à `active_classes`.
-3. Si `courses:{classId}` est déjà en cache → affichage immédiat, pas de scrape supplémentaire.
-4. Le cron horaire ne parcourt ensuite que `active_classes` pour les mises à jour récurrentes.
-
-**Effet de bord accepté** : le tout premier élève d'une classe a un léger délai (quelques secondes, le temps du scrape à la demande) ; les suivants sur la même classe ne l'ont pas.
-
-**Nettoyage** (optionnel, non-bloquant pour le MVP) : `active_classes` peut légèrement se désynchroniser avec le temps (tokens expirés dont la classe reste listée comme active). Impact minime — au pire quelques classes scrapées en trop. Un recalcul périodique (scan des tokens existants, ex: hebdo) permet de garder l'index propre si besoin, mais n'est pas requis pour lancer.
+**Compromis accepté** : on scrape ~60 classes/cycle au lieu de 5-15, ce qui reste dans une fourchette
+raisonnable de trafic vis-à-vis de PRONOTE (voir volume estimé en §3, déjà comptabilisé pour 60
+classes). Si jamais le volume devenait un problème réel en production, réintroduire un filtre par
+classes actives reste possible sans tout redesigner (juste rajouter un index et une condition dans la
+boucle du scraper).
 
 ## 5. Structure des clés KV
 
 ```
 classes:list                → [{ id, label, schoolYear }, ...]           # cache hebdo, toutes classes
 courses:{classId}           → [{ uid, subject, teacher, room,
-                                  day, start, end, weekPattern[] }, ...]  # cache horaire, classes actives seulement
+                                  day, start, end, weekPattern[] }, ...]  # cache horaire, toutes les classes
 cancellations:{classId}     → [{ courseUid, week, date }, ...]           # idem
-active_classes              → SET de classId                            # index des classes à scraper en cron
 
 token:{token}                → {
                                   selections: [
@@ -154,8 +147,37 @@ Implémentation : [`src/lib/pronote/decode.js`](../src/lib/pronote/decode.js) �
 `parseDom()`, `mondayOfWeek()`, `courseStartDateTime()`. Testé manuellement contre 5 cours réels
 (4 mesurés le 14/09 + l'exemple du doc de préprod).
 
+Confirmation supplémentaire trouvée dans les réponses PRONOTE elles-mêmes (`FonctionParametres` et
+`DemandeParametreUtilisateur`) : `PlacesParJour: 26`, `PlacesParHeure: 2`, et une table `ListeHeures`
+qui donne explicitement le début/fin de chacun des 26 créneaux (`08h00-08h30`, `08h30-09h00`, ...) —
+exactement notre formule, mais fournie par le serveur. `PremierLundi: "14/09/2026"` confirme aussi la
+date de référence de la semaine 1 utilisée dans `mondayOfWeek()`. À terme, on pourrait lire cette
+table dynamiquement au lieu de la coder en dur, pour rester robuste si PRONOTE change un jour la
+grille horaire — pas nécessaire pour le MVP.
+
+## 8bis. Découverte : le protocole PRONOTE est chiffré côté client (14/09/2026)
+
+En inspectant `invite.js` pour comprendre comment est généré le `hash` dans
+`POST /hp/appelfonction/2/{session}/{hash}`, on trouve l'usage de `forge.js` (lib de crypto JS) avec
+négociation d'une clé et d'un IV AES par session (`cleAES`, `ivAES`). Le hash observé change bel et
+bien d'une session à l'autre pour un même appel (`FonctionParametres`, `FonctionEmploiDuTemps`, etc.),
+ce qui exclut de le coder en dur ou de le déduire par un simple mapping fixe.
+
+**Conséquence** : impossible de rejouer les appels PRONOTE en HTTP brut sans ré-implémenter tout
+l'échange cryptographique du client (risqué et chronophage). **Solution retenue** : piloter un vrai
+navigateur headless (Playwright) qui charge `/hp/invite` et laisse le JS officiel de PRONOTE gérer le
+chiffrement — le scraper lit ensuite les réponses réseau JSON (déjà en clair une fois déchiffrées côté
+client) exactement comme observé manuellement dans ce document.
+
+Impact archi : voir §1 (diagramme mis à jour) et §2 (stack) — le scraper tourne dans GitHub Actions
+avec Playwright, pas dans une route API Vercel (dépassé par la lenteur d'un navigateur headless vs la
+limite de 10s des fonctions Vercel gratuites).
+
 ## 9. Reste à faire avant de coder le générateur `.ics`
 
-Plus aucun point bloquant connu. Prochaine étape : écrire le scraper (`/api/cron/scrape`) qui
-récupère `ListeCours` par classe, applique `decodeCoursePosition`/`parseDom`/`courseStartDateTime`,
-et stocke le résultat normalisé dans `courses:{classId}` (Vercel KV).
+Plus aucun point bloquant connu. Prochaines étapes :
+1. Écrire le scraper Node + Playwright (`scripts/scrape.mjs` ou équivalent) : charge `/hp/invite`,
+   sélectionne chaque classe de `classes:list`, capture la réponse `FonctionEmploiDuTemps`, applique
+   `decodeCoursePosition`/`parseDom`/`courseStartDateTime`, écrit dans Vercel KV via l'API REST.
+2. Écrire le workflow GitHub Actions (cron `0 4-16 * * *`, secrets pour le token Vercel KV).
+3. Construire le formulaire élève (Next.js) et le générateur `.ics` (`/api/calendar/[token]`).
