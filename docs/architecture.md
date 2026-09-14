@@ -238,20 +238,70 @@ limite de 10s des fonctions Vercel gratuites).
 Retours après premier test manuel de l'app par le porteur du projet, à traiter **avant** le
 déploiement Vercel :
 
-1. 🐛 **Cours manquant si sa première occurrence est dans le futur** — ex: "Anglais Q5" (3TI Web)
-   commence la semaine prochaine et n'apparaît pas dans la liste de sélection des cours. À
-   investiguer : soit `FonctionEmploiDuTemps` ne renvoie pas ce cours tant que sa semaine de début
-   n'est pas atteinte (contredirait l'hypothèse §8bis "une requête suffit pour tout l'annuel"), soit
-   bug dans le scraper/décodage qui l'exclut silencieusement. Voir section "Investigation" ci-dessous
-   une fois менée.
-2. 🚧 **Multi-classe non exposé dans l'UI** — le modèle de données et l'API (`selections` en tableau,
-   §5) supportent déjà plusieurs classes/années par token, mais [`src/app/page.js`](../src/app/page.js)
-   ne permet de choisir qu'**une seule classe**. Bloquant pour le persona "redoublant" (§2.1 de la
-   préprod) qui a besoin de cumuler des cours de deux années. À ajouter : un bouton "+ Ajouter une
-   autre classe" après l'étape cours, qui boucle vers une nouvelle sélection classe→cours et
-   l'ajoute au tableau `selections` avant l'appel à `/api/selections`.
+1. ✅ **Cours "Anglais Q5" (3TI Web) absent** — investigué en profondeur, voir §11. Cause confirmée :
+   pas un bug du scraper ; **corrigé indirectement** par la fusion au lieu de l'écrasement (§11).
+2. ✅ **Multi-classe** — ajouté dans [`src/app/page.js`](../src/app/page.js) : bouton "+ Ajouter une
+   autre classe" après l'étape cours, boucle vers une nouvelle sélection classe→cours, cumule dans
+   `selections[]` avant l'appel à `/api/selections`. Testé (3TI Web + 2TI Web dans un même lien).
 
-**Mis de côté pour plus tard, à ne pas oublier** : une fois ces deux points réglés, prochaine étape
-= **identité visuelle + réflexion UX**. L'interface actuelle est un squelette Tailwind générique
-(§3.6 de la page Notion pédagogique) — le parcours (classe → cours → lien) fonctionne mais n'a pas
-été pensé comme une expérience optimale ; à revoir une fois le fond stabilisé, pas avant.
+**Mis de côté pour plus tard, à ne pas oublier** : une fois le fond stabilisé, prochaine étape =
+**identité visuelle + réflexion UX**. L'interface actuelle est un squelette Tailwind générique (§3.6
+de la page Notion pédagogique) — le parcours (classe → cours → lien) fonctionne mais n'a pas été
+pensé comme une expérience optimale.
+
+**Explicitement dépriorisé par le porteur du projet (14/09/2026)** : la question de la visibilité
+anticipée des examens (§11bis) — "problème à régler après le MVP, pas une urgence du tout". Ne pas y
+retoucher avant que le reste soit stable et déployé.
+
+## 11. Découverte critique : les identifiants PRONOTE ne sont PAS stables entre sessions (14/09/2026)
+
+En creusant le cas "Anglais Q5" (§10), comparaison de plusieurs scrapes de la même classe "3TI Web" à
+quelques heures d'intervalle : **trois identifiants `id` différents** pour la même classe réelle :
+
+```
+50#B_WKFPie0r9T0BesZorFReBHUAAg0NYzIR1ZVIYgqIU   (scrape A)
+50#PBHa43vDBEQQxiLeXbQjnunOIqD0mo66f0s9jHEvg-Y    (scrape B)
+50#EAynBMfmtEWkaevXF3VR7yoR31CF5Csl_V_CQax9vkU    (scrape C)
+```
+
+Même constat pour l'identifiant `N` de chaque cours individuel. PRONOTE régénère apparemment ces
+identifiants opaques à chaque nouvelle session (anti-fixation de session probable, pas un bug de
+notre côté).
+
+**Impact, non détecté avant parce que jamais testé sur plusieurs scrapes consécutifs** : toute
+l'architecture utilisait ces `id` comme clés stables — `courses:{classId}` dans Redis, le `classId`
+stocké dans le token d'un élève, et les `uid` de cours dans `excludedCourseUids`. Un `id`/`uid` qui
+change à chaque scrape aurait cassé silencieusement l'app dans l'heure suivant la création d'un lien
+(prochain cycle de cron horaire = nouveaux id = plus aucune correspondance).
+
+**Correctif** — clés stables dérivées du **contenu**, plus des identifiants opaques PRONOTE :
+- Classe : le label lui-même (`"3TI Web"`) sert de clé — stable par construction.
+- Cours : hash SHA-1 (tronqué à 16 caractères) de `matière|jour|heure|durée|prof|salle` — ces champs
+  ne changent pas d'un scrape à l'autre, contrairement à `N`.
+
+Voir [`cleCoursStable`](../src/lib/pronote/scraper.js) et [`listerClasses`](../src/lib/pronote/scraper.js).
+
+## 11bis. Le cas "Anglais Q5" : conclusion honnête, incertitude assumée
+
+Deux hypothèses examinées pour expliquer l'absence initiale du cours :
+
+1. ~~Cours pas encore publié par l'école~~ — **écartée** : le porteur du projet avait accès au cours
+   bien avant le début du projet ; son `dom` ("[2..6,10..14]") confirme qu'il ne se donne
+   effectivement pas semaine 1, mais il existait bien dans PRONOTE depuis le début.
+2. **Réponses `FonctionEmploiDuTemps` non déterministes entre sessions** — confirmée empiriquement :
+   deux sessions fraîches, au même instant, pour la même classe, ont renvoyé des listes de cours
+   différentes (un cours présent dans l'une, absent de l'autre, et vice-versa pour un autre cours).
+   **Cause exacte non confirmée** — hypothèse la plus plausible : mise en cache/CDN avec des nœuds pas
+   parfaitement synchronisés, gérant différemment le trafic selon son origine réseau. Argument en
+   faveur : sur 5 scrapes automatisés consécutifs (GitHub Actions, infrastructure hors Belgique),
+   0 n'ont capté la variante avec "Anglais Q5" ; sur ~3 sessions de navigation manuelle/interactive,
+   1 l'a captée. Corrélation observée, causalité non prouvée — pas assez d'essais pour conclure
+   formellement, et pas creusé plus loin sur consigne du porteur du projet (voir ci-dessous).
+
+**Mitigation en place, indépendante de la cause exacte** : la fusion au lieu de l'écrasement (§11)
+fait qu'un cours capté même une seule fois sur plusieurs scrapes reste visible durablement — donc
+peu importe la cause, le système devient robuste à ce genre de réponse incomplète par nature.
+
+**Décision du porteur du projet** : la complétude parfaite (en particulier pour les examens, publiés
+tardivement par nature côté PRONOTE) est explicitement **dépriorisée, à traiter après le MVP**. Ne
+pas investiguer davantage la cause du non-déterminisme avant que ce soit redevenu prioritaire.

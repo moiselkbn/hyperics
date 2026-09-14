@@ -8,6 +8,7 @@
  * Note : le sélecteur de classe n'est PAS un <select> HTML natif mais un widget
  * custom (Angular) — bouton qui ouvre une liste d'options (role="option").
  */
+import { createHash } from 'node:crypto';
 import { chromium } from 'playwright';
 import { decodeCoursePosition, parseDom } from './decode.js';
 
@@ -48,6 +49,19 @@ async function fermerPopupInfo(page, { timeout = 5000 } = {}) {
 }
 
 /**
+ * PRONOTE régénère ses identifiants opaques (`N`) à chaque nouvelle session —
+ * vérifié empiriquement le 14/09/2026 : trois scrapes de la même classe "3TI
+ * Web" à quelques heures d'intervalle ont donné trois `id` différents. Utiliser
+ * `N` comme clé stable casserait les liens élèves au scrape horaire suivant
+ * (voir docs/architecture.md §11). On dérive donc une clé stable du CONTENU du
+ * cours à la place — matière/jour/heure/prof/salle, qui eux ne changent pas.
+ */
+function cleCoursStable({ subject, dayIndex, startMinutes, durationMinutes, teacher, room }) {
+  const contenu = [subject, dayIndex, startMinutes, durationMinutes, teacher, room].join('|');
+  return createHash('sha1').update(contenu).digest('hex').slice(0, 16);
+}
+
+/**
  * Convertit une entrée brute `ListeCours[i]` de PRONOTE en cours normalisé
  * (avec jour/heure décodés), prêt à être filtré/stocké.
  */
@@ -59,25 +73,36 @@ function normaliserCours(coursBrut) {
   const champ = (code) => coursBrut.listeC?.find((c) => c.G === code)?.C;
   const libelleDe = (c) => (Array.isArray(c) ? c.map((x) => x.L).join(', ') : c?.L) || null;
 
+  const subject = libelleDe(champ(0));
+  const teacher = libelleDe(champ(1));
+  const room = libelleDe(champ(3));
+
   return {
-    uid: coursBrut.N,
+    uid: cleCoursStable({ subject, dayIndex, startMinutes, durationMinutes, teacher, room }),
     dayIndex,
     startMinutes,
     durationMinutes,
     weeks,
-    subject: libelleDe(champ(0)),
-    teacher: libelleDe(champ(1)),
-    room: libelleDe(champ(3)),
+    subject,
+    teacher,
+    room,
     comment: champ(5)?.str || null,
   };
 }
 
 /**
- * Récupère la liste des classes ("promotions") avec leur ID stable PRONOTE,
- * via la réponse `FonctionRenvoyerListeDeRessource` déclenchée à l'ouverture
- * du sélecteur de classe.
+ * Récupère la liste des classes ("promotions") via `FonctionRenvoyerListeDeRessource`,
+ * déclenchée à l'ouverture du sélecteur de classe.
  *
- * @returns {Promise<{ id: string, label: string }[]>}
+ * Le champ `N` renvoyé par PRONOTE pour chaque classe n'est PAS stable d'une
+ * session à l'autre (voir la note dans `cleCoursStable`, même constat pour les
+ * classes que pour les cours) — on utilise donc le label lui-même comme clé
+ * (ex: "3TI Web"), stable par construction puisque c'est le nom que l'école
+ * utilise pour désigner la classe.
+ *
+ * @returns {Promise<{ id: string, label: string }[]>} id === label (gardés
+ *   séparés dans le type pour ne pas devoir toucher le reste du code qui
+ *   distingue déjà "clé de stockage" et "libellé affiché").
  */
 async function listerClasses(page) {
   const reponseAttendue = attendreReponseFonction(page, 'FonctionRenvoyerListeDeRessource');
@@ -88,7 +113,7 @@ async function listerClasses(page) {
   await page.keyboard.press('Escape'); // referme la liste ouverte pour la déclencher
 
   const liste = json?.dataSec?.data?.ListeRessources?.Liste ?? [];
-  return liste.map((r) => ({ id: r.N, label: r.L }));
+  return liste.map((r) => ({ id: r.L, label: r.L }));
 }
 
 /**

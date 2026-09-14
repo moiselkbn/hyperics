@@ -34,6 +34,16 @@ export async function closeStore() {
  * Enregistre le résultat d'un scrape complet : la liste des classes et les
  * cours de chaque classe, chacun sous sa propre clé Redis.
  *
+ * Fusionne avec le cache existant plutôt que de l'écraser (voir §11 de
+ * l'archi) : la réponse PRONOTE pour une classe s'est avérée parfois
+ * incomplète d'un scrape à l'autre (un cours réel absent d'une réponse mais
+ * présent dans une autre, cause exacte non confirmée côté PRONOTE). Écraser
+ * ferait disparaître un cours au hasard d'un cycle horaire à l'autre. La
+ * fusion accumule : un cours vu au moins une fois reste visible, ses champs
+ * (salle/prof/horaire) sont rafraîchis à chaque fois qu'il réapparaît dans un
+ * scrape. Contrepartie assumée : un cours réellement supprimé par l'école ne
+ * disparaîtrait pas de notre cache (cas non géré pour le MVP — voir backlog).
+ *
  * @param {{ classes: {id: string, label: string}[], coursesByClassId: Record<string, object[]> }} resultat
  */
 export async function saveScrapeResult({ classes, coursesByClassId }) {
@@ -41,12 +51,26 @@ export async function saveScrapeResult({ classes, coursesByClassId }) {
 
   await redis.set('classes:list', JSON.stringify(classes));
 
-  // multi() regroupe les écritures en une seule transaction (plus rapide, atomique).
-  const multi = redis.multi();
-  for (const [classId, courses] of Object.entries(coursesByClassId)) {
-    multi.set(`courses:${classId}`, JSON.stringify(courses));
-  }
-  await multi.exec();
+  const classIds = Object.keys(coursesByClassId);
+
+  // 1) Lit l'existant pour chaque classe scrapée, en un seul aller-retour.
+  const lecture = redis.multi();
+  for (const classId of classIds) lecture.get(`courses:${classId}`);
+  const existantsBruts = await lecture.exec();
+
+  // 2) Fusionne par clé stable de cours (uid = hash du contenu, voir
+  //    scraper.js), puis écrit tout, en un seul aller-retour.
+  const ecriture = redis.multi();
+  classIds.forEach((classId, i) => {
+    const existants = existantsBruts[i] ? JSON.parse(existantsBruts[i]) : [];
+    const frais = coursesByClassId[classId];
+
+    const parUid = new Map(existants.map((c) => [c.uid, c]));
+    for (const c of frais) parUid.set(c.uid, c); // le scrape frais rafraîchit les champs
+
+    ecriture.set(`courses:${classId}`, JSON.stringify([...parUid.values()]));
+  });
+  await ecriture.exec();
 }
 
 /** Lit la liste des classes en cache (ou null si jamais scrapée). */
