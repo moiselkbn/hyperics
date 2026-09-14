@@ -29,20 +29,26 @@ function versDateIcs(date) {
  * Construit les événements iCalendar (une occurrence par semaine où le cours
  * a lieu) pour une sélection donnée.
  *
- * @param {{ classId: string, includedCourseUids?: string[] }[]} selections
- *   `includedCourseUids` absent/null = tous les cours de la classe inclus.
+ * @param {{ classId: string, excludedCourseUids?: string[] }[]} selections
+ *   `excludedCourseUids` absent/vide = tous les cours de la classe inclus.
+ *
+ *   Important : liste d'EXCLUSION, pas d'inclusion. Un cours ajouté par
+ *   PRONOTE après la création du lien (ex: publié une fois sa date de début
+ *   atteinte) a un uid qui n'a jamais pu figurer dans `excludedCourseUids` —
+ *   il apparaît donc automatiquement, sans que l'élève ait besoin de
+ *   régénérer son lien. Avec une liste d'inclusion, l'inverse se produirait :
+ *   un cours inconnu au moment du clic resterait invisible pour toujours.
  * @returns {Promise<object[]>} événements au format attendu par `ics.createEvents`
  */
 async function construireEvenements(selections) {
   const evenements = [];
 
-  for (const { classId, includedCourseUids } of selections) {
+  for (const { classId, excludedCourseUids } of selections) {
     const cours = await getCoursesForClass(classId);
     if (!cours) continue; // classe jamais scrapée (ne devrait pas arriver en usage normal)
 
-    const coursInclus = includedCourseUids
-      ? cours.filter((c) => includedCourseUids.includes(c.uid))
-      : cours;
+    const exclus = new Set(excludedCourseUids || []);
+    const coursInclus = cours.filter((c) => !exclus.has(c.uid));
 
     for (const c of coursInclus) {
       for (const semaine of c.weeks) {
@@ -86,7 +92,7 @@ function ajouterRefreshInterval(ics) {
 
 /**
  * Génère le contenu texte d'un fichier .ics pour une sélection d'élève.
- * @param {{ classId: string, includedCourseUids?: string[] }[]} selections
+ * @param {{ classId: string, excludedCourseUids?: string[] }[]} selections
  * @returns {Promise<string>}
  */
 export async function generateIcsForSelections(selections) {

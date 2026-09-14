@@ -4,7 +4,8 @@
 
 import { useEffect, useState } from 'react';
 
-// Les 3 étapes du formulaire : choisir sa classe -> choisir ses cours -> récupérer son lien.
+// Les 3 étapes du formulaire : choisir une classe -> choisir ses cours -> récupérer son lien.
+// L'étape COURS peut se répéter plusieurs fois (redoublants : plusieurs classes/années).
 const ETAPES = { CLASSE: 'classe', COURS: 'cours', LIEN: 'lien' };
 
 const JOURS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi'];
@@ -22,9 +23,14 @@ export default function Home() {
 
   const [classes, setClasses] = useState([]);
   const [classesChargees, setClassesChargees] = useState(false);
-  const [classeId, setClasseId] = useState('');
 
-  const [cours, setCours] = useState([]);
+  // Les classes déjà configurées (label + cours décochés) — un élève normal
+  // n'en aura qu'une ; un redoublant peut en cumuler plusieurs.
+  const [classesAjoutees, setClassesAjoutees] = useState([]);
+
+  // La classe en cours de configuration à l'étape COURS.
+  const [classeEnCours, setClasseEnCours] = useState(null); // { id, label }
+  const [coursDeLaClasse, setCoursDeLaClasse] = useState([]);
   const [coursCoches, setCoursCoches] = useState(new Set());
   const [chargementCours, setChargementCours] = useState(false);
 
@@ -43,20 +49,20 @@ export default function Home() {
       .finally(() => setClassesChargees(true));
   }, []);
 
-  async function choisirClasse(id) {
-    setClasseId(id);
+  async function choisirClasse(c) {
     setChargementCours(true);
     setErreur(null);
     try {
-      const res = await fetch(`/api/classes/${encodeURIComponent(id)}/courses`);
+      const res = await fetch(`/api/classes/${encodeURIComponent(c.id)}/courses`);
       if (!res.ok) throw new Error('classe introuvable');
       const data = await res.json();
-      setCours(data.courses);
+      setClasseEnCours(c);
+      setCoursDeLaClasse(data.courses);
       // Par défaut, tous les cours sont inclus — l'élève décoche ceux qu'il ne suit pas.
-      setCoursCoches(new Set(data.courses.map((c) => c.uid)));
+      setCoursCoches(new Set(data.courses.map((co) => co.uid)));
       setEtape(ETAPES.COURS);
     } catch {
-      setErreur("Impossible de charger les cours de cette classe.");
+      setErreur('Impossible de charger les cours de cette classe.');
     } finally {
       setChargementCours(false);
     }
@@ -74,7 +80,31 @@ export default function Home() {
     });
   }
 
+  // Range la classe en cours de configuration dans la liste finalisée, et
+  // renvoie la liste à jour (utile car setState est asynchrone : on ne peut
+  // pas relire `classesAjoutees` juste après l'avoir appelé).
+  function finaliserClasseEnCours() {
+    const excludedCourseUids = coursDeLaClasse
+      .map((c) => c.uid)
+      .filter((uid) => !coursCoches.has(uid));
+
+    const entree = { classId: classeEnCours.id, label: classeEnCours.label, excludedCourseUids };
+    const suivant = [...classesAjoutees, entree];
+    setClassesAjoutees(suivant);
+    return suivant;
+  }
+
+  function ajouterUneAutreClasse() {
+    finaliserClasseEnCours();
+    setClasseEnCours(null);
+    setCoursDeLaClasse([]);
+    setCoursCoches(new Set());
+    setEtape(ETAPES.CLASSE);
+  }
+
   async function genererLien() {
+    const toutesLesClasses = finaliserClasseEnCours();
+
     setEnvoiEnCours(true);
     setErreur(null);
     try {
@@ -82,7 +112,10 @@ export default function Home() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          selections: [{ classId: classeId, includedCourseUids: [...coursCoches] }],
+          selections: toutesLesClasses.map(({ classId, excludedCourseUids }) => ({
+            classId,
+            excludedCourseUids,
+          })),
         }),
       });
       if (!res.ok) throw new Error('échec de la création du lien');
@@ -99,6 +132,12 @@ export default function Home() {
     }
   }
 
+  // À l'étape "choisir une classe", on masque celles déjà ajoutées (pas de
+  // double sélection de la même classe).
+  const classesDisponibles = classes.filter(
+    (c) => !classesAjoutees.some((a) => a.classId === c.id),
+  );
+
   return (
     <div className="min-h-dvh bg-zinc-50 px-4 py-10 dark:bg-black">
       <main className="mx-auto flex w-full max-w-md flex-col gap-6">
@@ -109,6 +148,14 @@ export default function Home() {
           </p>
         </header>
 
+        {classesAjoutees.length > 0 && etape !== ETAPES.LIEN && (
+          <p className="text-xs text-zinc-500">
+            Classe{classesAjoutees.length > 1 ? 's' : ''} déjà ajoutée
+            {classesAjoutees.length > 1 ? 's' : ''} :{' '}
+            {classesAjoutees.map((c) => c.label).join(', ')}
+          </p>
+        )}
+
         {erreur && (
           <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
             {erreur}
@@ -118,17 +165,22 @@ export default function Home() {
         {etape === ETAPES.CLASSE && (
           <section className="flex flex-col gap-3">
             <h2 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-              1. Choisis ta classe
+              {classesAjoutees.length === 0 ? '1. Choisis ta classe' : 'Choisis ta seconde classe'}
             </h2>
+            {classesAjoutees.length > 0 && (
+              <p className="text-xs text-zinc-500">
+                Pour les redoublants : cumule les classes de tes deux années.
+              </p>
+            )}
             {!classesChargees ? (
               <p className="text-sm text-zinc-500">Chargement des classes...</p>
             ) : (
               <ul className="flex flex-col divide-y divide-zinc-200 overflow-hidden rounded-xl border border-zinc-200 bg-white dark:divide-zinc-800 dark:border-zinc-800 dark:bg-zinc-900">
-                {classes.map((c) => (
+                {classesDisponibles.map((c) => (
                   <li key={c.id}>
                     <button
                       type="button"
-                      onClick={() => choisirClasse(c.id)}
+                      onClick={() => choisirClasse(c)}
                       disabled={chargementCours}
                       className="w-full px-4 py-3 text-left text-sm text-zinc-800 hover:bg-zinc-50 disabled:opacity-50 dark:text-zinc-200 dark:hover:bg-zinc-800"
                     >
@@ -151,10 +203,10 @@ export default function Home() {
               ← Changer de classe
             </button>
             <h2 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-              2. Décoche les cours que tu ne suis pas
+              Décoche les cours que tu ne suis pas — {classeEnCours?.label}
             </h2>
             <ul className="flex flex-col divide-y divide-zinc-200 overflow-hidden rounded-xl border border-zinc-200 bg-white dark:divide-zinc-800 dark:border-zinc-800 dark:bg-zinc-900">
-              {cours.map((c) => (
+              {coursDeLaClasse.map((c) => (
                 <li key={c.uid} className="flex items-start gap-3 px-4 py-3">
                   <input
                     type="checkbox"
@@ -179,6 +231,7 @@ export default function Home() {
                 </li>
               ))}
             </ul>
+
             <button
               type="button"
               onClick={genererLien}
@@ -187,13 +240,21 @@ export default function Home() {
             >
               {envoiEnCours ? 'Génération...' : `Générer mon lien (${coursCoches.size} cours)`}
             </button>
+            <button
+              type="button"
+              onClick={ajouterUneAutreClasse}
+              disabled={envoiEnCours || coursCoches.size === 0}
+              className="rounded-full border border-zinc-300 px-5 py-3 text-sm font-medium text-zinc-700 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300"
+            >
+              + Ajouter une autre classe (redoublant)
+            </button>
           </section>
         )}
 
         {etape === ETAPES.LIEN && lien && (
           <section className="flex flex-col gap-4">
             <h2 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-              3. Abonne-toi dans ton calendrier
+              Abonne-toi dans ton calendrier
             </h2>
             <a
               href={lien.webcal}

@@ -66,9 +66,10 @@ export async function getCoursesForClass(classId) {
 /**
  * Crée un nouveau lien élève (token opaque) et enregistre sa sélection.
  *
- * @param {{ classId: string, includedCourseUids: string[] }[]} selections
+ * @param {{ classId: string, excludedCourseUids: string[] }[]} selections
  *   un élément par classe/année choisie — plusieurs éléments pour un redoublant
- *   (voir docs/architecture.md §5).
+ *   (voir docs/architecture.md §5). `excludedCourseUids` = cours décochés par
+ *   l'élève, PAS les cours retenus — voir la note dans ics.js pour pourquoi.
  * @returns {Promise<string>} le token généré, à mettre dans le lien webcal
  */
 export async function createSelection(selections) {

@@ -3,7 +3,10 @@ import { createSelection } from '@/lib/pronote/store';
 
 /**
  * POST /api/selections — crée un lien élève (token) à partir d'une sélection.
- * Corps attendu : { selections: [{ classId, includedCourseUids? }, ...] }
+ * Corps attendu : { selections: [{ classId, excludedCourseUids? }, ...] }
+ *
+ * excludedCourseUids = cours décochés par l'élève (liste d'EXCLUSION, pas
+ * d'inclusion) — voir la note dans ics.js pour pourquoi ce sens a été choisi.
  */
 export async function POST(request) {
   const body = await request.json().catch(() => null);

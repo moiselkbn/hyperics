@@ -231,4 +231,27 @@ limite de 10s des fonctions Vercel gratuites).
    cron `0 4-16 * * *` + déclenchement manuel (`workflow_dispatch`) pour tester. `REDIS_URL` en secret
    GitHub Actions (jamais commitée). **Validé en conditions réelles** (14/09/2026) : 64 classes, 197
    cours, écrits dans Redis en ~53s (scraping + installation Chromium comprise).
-4. Construire le formulaire élève (Next.js) et le générateur `.ics` (`/api/calendar/[token]`).
+4. ✅ Construire le formulaire élève (Next.js) et le générateur `.ics` (`/api/calendar/[token]`).
+
+## 10. Backlog — avant déploiement public (retours du 14/09/2026)
+
+Retours après premier test manuel de l'app par le porteur du projet, à traiter **avant** le
+déploiement Vercel :
+
+1. 🐛 **Cours manquant si sa première occurrence est dans le futur** — ex: "Anglais Q5" (3TI Web)
+   commence la semaine prochaine et n'apparaît pas dans la liste de sélection des cours. À
+   investiguer : soit `FonctionEmploiDuTemps` ne renvoie pas ce cours tant que sa semaine de début
+   n'est pas atteinte (contredirait l'hypothèse §8bis "une requête suffit pour tout l'annuel"), soit
+   bug dans le scraper/décodage qui l'exclut silencieusement. Voir section "Investigation" ci-dessous
+   une fois менée.
+2. 🚧 **Multi-classe non exposé dans l'UI** — le modèle de données et l'API (`selections` en tableau,
+   §5) supportent déjà plusieurs classes/années par token, mais [`src/app/page.js`](../src/app/page.js)
+   ne permet de choisir qu'**une seule classe**. Bloquant pour le persona "redoublant" (§2.1 de la
+   préprod) qui a besoin de cumuler des cours de deux années. À ajouter : un bouton "+ Ajouter une
+   autre classe" après l'étape cours, qui boucle vers une nouvelle sélection classe→cours et
+   l'ajoute au tableau `selections` avant l'appel à `/api/selections`.
+
+**Mis de côté pour plus tard, à ne pas oublier** : une fois ces deux points réglés, prochaine étape
+= **identité visuelle + réflexion UX**. L'interface actuelle est un squelette Tailwind générique
+(§3.6 de la page Notion pédagogique) — le parcours (classe → cours → lien) fonctionne mais n'a pas
+été pensé comme une expérience optimale ; à revoir une fois le fond stabilisé, pas avant.
