@@ -200,5 +200,8 @@ limite de 10s des fonctions Vercel gratuites).
    `saveScrapeResult`/`getClassesList`/`getCoursesForClass`.
    [`scripts/scrape-and-store.mjs`](../scripts/scrape-and-store.mjs) : script de production (scrape +
    écriture Redis), testé en local de bout en bout.
-3. Écrire le workflow GitHub Actions (cron `0 4-16 * * *`, `REDIS_URL` en secret GitHub Actions).
+3. ✅ **Workflow GitHub Actions** — [`.github/workflows/scrape.yml`](../.github/workflows/scrape.yml) :
+   cron `0 4-16 * * *` + déclenchement manuel (`workflow_dispatch`) pour tester. `REDIS_URL` en secret
+   GitHub Actions (jamais commitée). **Validé en conditions réelles** (14/09/2026) : 64 classes, 197
+   cours, écrits dans Redis en ~53s (scraping + installation Chromium comprise).
 4. Construire le formulaire élève (Next.js) et le générateur `.ics` (`/api/calendar/[token]`).
