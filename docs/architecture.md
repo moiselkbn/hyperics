@@ -64,9 +64,11 @@ on:
 
 → **13 cycles/jour** (6h, 7h, ..., 18h), largement sous la contrainte "max 3x/jour".
 
-### Volume de requêtes estimé
+### Volume de requêtes estimé — et mesuré ✅
 
 Un cycle = 1 chargement de `/hp/invite` + 1 sélection par classe scrapée. Avec les ~60 classes : ~13 cycles/jour × 60 classes = ~780 "sélections classe" par jour, ~60/h en un seul burst horaire. Comparable ou inférieur au trafic organique qu'aurait généré un usage manuel de PRONOTE par une centaine d'élèves — pas un pattern qui ressemble à de l'abus (voir § 7, point de vigilance).
+
+**Mesuré en local** (14/09/2026, scraper Playwright réel) : ~4,4s pour 8 classes → **~33s pour scraper les 60 classes**, délai anti-burst inclus. Bien plus rapide que l'estimation initiale (2-3 min) — un cycle horaire complet a une marge confortable.
 
 ### Bonnes pratiques appliquées
 
@@ -175,9 +177,10 @@ limite de 10s des fonctions Vercel gratuites).
 
 ## 9. Reste à faire avant de coder le générateur `.ics`
 
-Plus aucun point bloquant connu. Prochaines étapes :
-1. Écrire le scraper Node + Playwright (`scripts/scrape.mjs` ou équivalent) : charge `/hp/invite`,
-   sélectionne chaque classe de `classes:list`, capture la réponse `FonctionEmploiDuTemps`, applique
-   `decodeCoursePosition`/`parseDom`/`courseStartDateTime`, écrit dans Vercel KV via l'API REST.
-2. Écrire le workflow GitHub Actions (cron `0 4-16 * * *`, secrets pour le token Vercel KV).
-3. Construire le formulaire élève (Next.js) et le générateur `.ics` (`/api/calendar/[token]`).
+1. ✅ **Scraper Node + Playwright** — [`src/lib/pronote/scraper.js`](../src/lib/pronote/scraper.js) :
+   ouvre `/hp/invite`, ferme la pop-up d'info, liste les classes (widget custom, pas un `<select>`
+   natif), sélectionne chaque classe et capture la réponse `FonctionEmploiDuTemps`, applique le
+   décodage (§8). Testé en local (`node scripts/test-scrape.mjs [n]`) — ~33s pour les 60 classes.
+2. Brancher l'écriture dans Vercel KV via l'API REST (une fois le compte Vercel créé).
+3. Écrire le workflow GitHub Actions (cron `0 4-16 * * *`, secrets pour le token Vercel KV).
+4. Construire le formulaire élève (Next.js) et le générateur `.ics` (`/api/calendar/[token]`).
