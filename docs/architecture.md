@@ -128,6 +128,34 @@ Le cas redoublant reste géré nativement : `selections` est un tableau, donc un
 
 Le scraping PRONOTE `/hp/invite` n'est pas une API officielle/documentée — rétro-ingénierie d'un endpoint public sans authentification. Le volume estimé (§ 3) reste dans une fourchette raisonnable comparée à un usage manuel équivalent, et l'optimisation § 4 le réduit encore. Rester attentif si le volume réel dépasse largement les estimations une fois en production.
 
-## 8. Reste à faire avant de coder le générateur `.ics`
+## 8. Décodage `p`/`d` — résolu ✅ (14/09/2026)
 
-Décodage précis de `p`/`d` (position/durée dans la grille horaire PRONOTE) en heures réelles de début/fin — bloquant, à faire en premier (comparer plusieurs cours connus visuellement sur la grille pour caler l'échelle).
+Formule établie en comparant les données JSON brutes (`FonctionEmploiDuTemps`) avec les tooltips de
+la grille visuelle PRONOTE, sur 4 cours aux `p`/`d` différents (tous concordants) :
+
+```
+SLOTS_PAR_JOUR = 26            // grille 08h00-21h00, tranches de 30 min (13h × 2)
+HEURE_DEBUT_JOURNEE = 08h00
+
+dayIndex        = floor(p / 26)        // 0 = lundi, 1 = mardi, ... 4 = vendredi
+slotDansJournee = p % 26
+heureDébut      = 08h00 + slotDansJournee × 30 min
+durée           = d × 30 min
+```
+
+`p` encode donc à la fois le jour et l'heure de la semaine (jour × 26 + position dans la journée),
+`d` est une simple durée en demi-heures. Cohérent avec le réglage "13 séquences horaires max" vu
+dans les préférences d'affichage PRONOTE (13h de 08h à 21h × 2 tranches de 30 min = 26 slots/jour).
+
+Le numéro de semaine (`dom`) se convertit en date calendaire via un lundi de référence pour la
+semaine 1 (`2026-09-14`, jour de la rentrée) — à ajuster si le projet est reconduit une autre année.
+
+Implémentation : [`src/lib/pronote/decode.js`](../src/lib/pronote/decode.js) — `decodeCoursePosition()`,
+`parseDom()`, `mondayOfWeek()`, `courseStartDateTime()`. Testé manuellement contre 5 cours réels
+(4 mesurés le 14/09 + l'exemple du doc de préprod).
+
+## 9. Reste à faire avant de coder le générateur `.ics`
+
+Plus aucun point bloquant connu. Prochaine étape : écrire le scraper (`/api/cron/scrape`) qui
+récupère `ListeCours` par classe, applique `decodeCoursePosition`/`parseDom`/`courseStartDateTime`,
+et stocke le résultat normalisé dans `courses:{classId}` (Vercel KV).
