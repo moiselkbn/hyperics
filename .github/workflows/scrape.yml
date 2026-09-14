@@ -1,0 +1,33 @@
+name: Scraper PRONOTE
+
+# Toutes les heures, 6h-18h heure Belgique en été (CEST = UTC+2, cf. docs/architecture.md §3).
+# Déclenchable aussi manuellement (workflow_dispatch) pour tester sans attendre le cron.
+on:
+  schedule:
+    - cron: '0 4-16 * * *'
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Récupère le code
+        uses: actions/checkout@v4
+
+      - name: Installe Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Installe les dépendances
+        run: npm ci
+
+      - name: Installe Chromium (Playwright)
+        run: npx playwright install --with-deps chromium
+
+      - name: Scrape PRONOTE et écrit dans Redis
+        run: node scripts/scrape-and-store.mjs
+        env:
+          REDIS_URL: ${{ secrets.REDIS_URL }}
